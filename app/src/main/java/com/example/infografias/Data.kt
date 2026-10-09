@@ -3,12 +3,14 @@ package com.example.infografias
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 // Si el modelo deja de funcionar, mira la lista actual en console.groq.com/docs/models
 const val BASE = "https://api.groq.com/openai/v1"
@@ -23,7 +25,10 @@ data class ListB(val icon: String, val heading: String, val items: List<String>)
 data class StepsB(val heading: String, val items: List<String>) : Block()
 data class CompareB(val heading: String, val left: Side, val right: Side) : Block()
 
-data class Info(val title: String, val subtitle: String, val blocks: List<Block>, val footer: String)
+data class Info(
+    val title: String, val subtitle: String, val blocks: List<Block>, val footer: String,
+    val imagePrompt: String = ""
+)
 
 private fun strings(a: JSONArray?): List<String> =
     if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
@@ -67,7 +72,7 @@ fun parseInfo(text: String): Info {
     if (blocks.isEmpty()) throw Exception("La IA no devolvió contenido. Intenta de nuevo.")
     return Info(
         o.optString("title", "Infografía").ifBlank { "Infografía" },
-        o.optString("subtitle"), blocks, o.optString("footer")
+        o.optString("subtitle"), blocks, o.optString("footer"), o.optString("image_prompt")
     )
 }
 
@@ -89,6 +94,7 @@ Eres un diseñador de infografías. Con el tema o texto del usuario, responde SO
 {"type":"steps","heading":"título","items":["...","..."]} con 3 a 5 pasos.
 {"type":"compare","heading":"título","left":{"title":"A","items":["..."]},"right":{"title":"B","items":["..."]}}.
 "footer": una frase corta de cierre.
+"image_prompt": descripción en inglés (máximo 30 palabras) de una ilustración sencilla que represente el tema, sin texto ni letras.
 Reglas: cada ítem de máximo 12 palabras. No inventes cifras ni estadísticas: usa números solo si están en el texto del usuario o son datos muy conocidos y seguros; si no, usa datos cualitativos o evita el bloque stats. Escribe en el mismo idioma del usuario.
 """.trimIndent()
     val body = JSONObject().put("model", LLM_MODEL).put("temperature", 0.4)
@@ -130,4 +136,25 @@ fun savePng(ctx: Context, bmp: Bitmap): Uri? {
     val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v) ?: return null
     ctx.contentResolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     return uri
+}
+
+fun fetchIllustration(prompt: String, seed: Int): Bitmap {
+    val full = prompt.take(400) + ", flat vector illustration, clean colorful design, no text, no letters"
+    val url = "https://image.pollinations.ai/prompt/" +
+        URLEncoder.encode(full, "UTF-8").replace("+", "%20") +
+        "?width=1024&height=576&nologo=true&seed=" + seed
+    val c = URL(url).openConnection() as HttpURLConnection
+    try {
+        c.connectTimeout = 30000
+        c.readTimeout = 120000
+        c.setRequestProperty("User-Agent", "InfografiasIA/1.0")
+        val code = c.responseCode
+        if (code !in 200..299) {
+            val msg = c.errorStream?.bufferedReader()?.readText()?.take(200) ?: ""
+            throw Exception("Error $code: $msg")
+        }
+        return BitmapFactory.decodeStream(c.inputStream) ?: throw Exception("La imagen llegó dañada")
+    } finally {
+        c.disconnect()
+    }
 }

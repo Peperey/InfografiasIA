@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,9 +23,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -129,7 +133,7 @@ fun BlockView(b: Block, pal: Palette) {
 }
 
 @Composable
-fun Infographic(info: Info, pal: Palette) {
+fun Infographic(info: Info, pal: Palette, illus: ImageBitmap?) {
     Column(
         Modifier.fillMaxWidth().background(pal.bg).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -147,6 +151,12 @@ fun Infographic(info: Info, pal: Palette) {
                     modifier = Modifier.padding(top = 6.dp)
                 )
             }
+        }
+        if (illus != null) {
+            Image(
+                bitmap = illus, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp))
+            )
         }
         info.blocks.forEach { BlockView(it, pal) }
         if (info.footer.isNotBlank()) {
@@ -183,15 +193,37 @@ fun App(prefs: SharedPreferences) {
     var info by remember { mutableStateOf<Info?>(null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    var withImage by remember { mutableStateOf(true) }
+    var illus by remember { mutableStateOf<ImageBitmap?>(null) }
+    var illusLoading by remember { mutableStateOf(false) }
+    var illusError by remember { mutableStateOf("") }
     val pal = PALETTES[palIdx]
+
+    fun genIllustration(prompt: String) {
+        illusLoading = true
+        illusError = ""
+        scope.launch {
+            try {
+                val bmp = withContext(Dispatchers.IO) { fetchIllustration(prompt, (1..99999).random()) }
+                illus = bmp.asImageBitmap()
+            } catch (e: Exception) {
+                illusError = "No pude generar la ilustración: " + e.message
+            }
+            illusLoading = false
+        }
+    }
 
     fun generate() {
         if (key.isEmpty()) { showKey = true; return }
         loading = true
         error = ""
+        illusError = ""
         scope.launch {
             try {
-                info = withContext(Dispatchers.IO) { makeInfo(key, topic.trim()) }
+                val inf = withContext(Dispatchers.IO) { makeInfo(key, topic.trim()) }
+                illus = null
+                info = inf
+                if (withImage && inf.imagePrompt.isNotBlank()) genIllustration(inf.imagePrompt)
             } catch (e: Exception) {
                 error = e.message ?: "Error"
             }
@@ -254,6 +286,11 @@ fun App(prefs: SharedPreferences) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PALETTES.forEachIndexed { i, p -> Chip(p.name, i == palIdx) { palIdx = i } }
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = withImage, onCheckedChange = { withImage = it })
+                Spacer(Modifier.width(8.dp))
+                Text("🎨 Añadir ilustración con IA")
+            }
             Button(
                 onClick = { generate() }, enabled = topic.isNotBlank() && !loading,
                 modifier = Modifier.fillMaxWidth()
@@ -272,10 +309,23 @@ fun App(prefs: SharedPreferences) {
                         layer.record { this@drawWithContent.drawContent() }
                         drawLayer(layer)
                     }
-                ) { Infographic(inf, pal) }
+                ) { Infographic(inf, pal, illus) }
+                if (illusLoading) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Dibujando la ilustración…", color = Muted)
+                    }
+                }
+                if (illusError.isNotEmpty()) Text(illusError, color = RedErr, fontSize = 13.sp)
+                if (withImage && inf.imagePrompt.isNotBlank()) {
+                    OutlinedButton(onClick = { genIllustration(inf.imagePrompt) }, enabled = !illusLoading) {
+                        Text("🎨 Otra ilustración")
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = { export(false) }) { Text("💾 Guardar imagen") }
-                    OutlinedButton(onClick = { export(true) }) { Text("📤 Compartir") }
+                    Button(onClick = { export(false) }, enabled = !illusLoading) { Text("💾 Guardar imagen") }
+                    OutlinedButton(onClick = { export(true) }, enabled = !illusLoading) { Text("📤 Compartir") }
                 }
                 Text(
                     "Revisa los datos y cifras antes de compartir: la IA puede equivocarse.",

@@ -21,9 +21,9 @@ data class Side(val title: String, val items: List<String>)
 
 sealed class Block
 data class StatsB(val stats: List<Stat>) : Block()
-data class ListB(val icon: String, val heading: String, val items: List<String>) : Block()
-data class StepsB(val heading: String, val items: List<String>) : Block()
-data class CompareB(val heading: String, val left: Side, val right: Side) : Block()
+data class ListB(val icon: String, val heading: String, val items: List<String>, val image: String = "") : Block()
+data class StepsB(val heading: String, val items: List<String>, val image: String = "") : Block()
+data class CompareB(val heading: String, val left: Side, val right: Side, val image: String = "") : Block()
 
 data class Info(
     val title: String, val subtitle: String, val blocks: List<Block>, val footer: String,
@@ -53,18 +53,18 @@ fun parseInfo(text: String): Info {
             "list" -> {
                 val items = strings(b.optJSONArray("items"))
                 if (items.isNotEmpty()) {
-                    blocks.add(ListB(b.optString("icon", "•").ifBlank { "•" }, b.optString("heading"), items))
+                    blocks.add(ListB(b.optString("icon", "•").ifBlank { "•" }, b.optString("heading"), items, b.optString("image_prompt")))
                 }
             }
             "steps" -> {
                 val items = strings(b.optJSONArray("items"))
-                if (items.isNotEmpty()) blocks.add(StepsB(b.optString("heading"), items))
+                if (items.isNotEmpty()) blocks.add(StepsB(b.optString("heading"), items, b.optString("image_prompt")))
             }
             "compare" -> {
                 val l = side(b.optJSONObject("left"))
                 val r = side(b.optJSONObject("right"))
                 if (l.items.isNotEmpty() || r.items.isNotEmpty()) {
-                    blocks.add(CompareB(b.optString("heading"), l, r))
+                    blocks.add(CompareB(b.optString("heading"), l, r, b.optString("image_prompt")))
                 }
             }
         }
@@ -83,7 +83,7 @@ private fun readResponse(c: HttpURLConnection): String {
     return txt
 }
 
-fun makeInfo(key: String, topic: String): Info {
+fun makeInfo(key: String, topic: String, blockImages: Int): Info {
     val system = """
 Eres un diseñador de infografías. Con el tema o texto del usuario, responde SOLO con un objeto JSON con estas claves:
 "title": título corto (máximo 8 palabras).
@@ -95,6 +95,7 @@ Eres un diseñador de infografías. Con el tema o texto del usuario, responde SO
 {"type":"compare","heading":"título","left":{"title":"A","items":["..."]},"right":{"title":"B","items":["..."]}}.
 "footer": una frase corta de cierre.
 "image_prompt": descripción en inglés (máximo 30 palabras) de una ilustración sencilla que represente el tema, sin texto ni letras.
+Además, añade la clave "image_prompt" (descripción en inglés de máximo 25 palabras de una ilustración sencilla, sin texto ni letras) a los primeros ${blockImages} bloques de tipo list, steps o compare; si el número es 0, no la añadas a ninguno.
 Reglas: cada ítem de máximo 12 palabras. No inventes cifras ni estadísticas: usa números solo si están en el texto del usuario o son datos muy conocidos y seguros; si no, usa datos cualitativos o evita el bloque stats. Escribe en el mismo idioma del usuario.
 """.trimIndent()
     val body = JSONObject().put("model", LLM_MODEL).put("temperature", 0.4)
@@ -157,4 +158,21 @@ fun fetchIllustration(prompt: String, seed: Int): Bitmap {
     } finally {
         c.disconnect()
     }
+}
+
+fun imageSlots(info: Info, total: Int): List<Pair<Int, String>> {
+    val out = ArrayList<Pair<Int, String>>()
+    if (info.imagePrompt.isNotBlank()) out.add(-1 to info.imagePrompt)
+    info.blocks.forEachIndexed { i, b ->
+        if (out.size < total) {
+            val p = when (b) {
+                is ListB -> b.image
+                is StepsB -> b.image
+                is CompareB -> b.image
+                else -> ""
+            }
+            if (p.isNotBlank()) out.add(i to p)
+        }
+    }
+    return out
 }

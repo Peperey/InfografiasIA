@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -75,7 +76,7 @@ fun Bullet(text: String, pal: Palette) {
 }
 
 @Composable
-fun BlockView(b: Block, pal: Palette) {
+fun BlockView(b: Block, pal: Palette, img: ImageBitmap?, onTap: () -> Unit) {
     val shape = RoundedCornerShape(18.dp)
     val base = Modifier.fillMaxWidth().clip(shape).background(pal.card)
     when (b) {
@@ -94,6 +95,7 @@ fun BlockView(b: Block, pal: Palette) {
             }
         }
         is ListB -> Column(base.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Illus(img, 2.4f, onTap)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(b.icon, fontSize = 26.sp)
                 Spacer(Modifier.width(10.dp))
@@ -102,6 +104,7 @@ fun BlockView(b: Block, pal: Palette) {
             b.items.forEach { Bullet(it, pal) }
         }
         is StepsB -> Column(base.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Illus(img, 2.4f, onTap)
             Text(b.heading, color = pal.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             b.items.forEachIndexed { i, t ->
                 Row(verticalAlignment = Alignment.Top) {
@@ -117,6 +120,7 @@ fun BlockView(b: Block, pal: Palette) {
             }
         }
         is CompareB -> Column(base.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Illus(img, 2.4f, onTap)
             if (b.heading.isNotBlank()) {
                 Text(b.heading, color = pal.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
@@ -133,7 +137,18 @@ fun BlockView(b: Block, pal: Palette) {
 }
 
 @Composable
-fun Infographic(info: Info, pal: Palette, illus: ImageBitmap?) {
+fun Illus(img: ImageBitmap?, ratio: Float, onTap: () -> Unit) {
+    if (img != null) {
+        Image(
+            bitmap = img, contentDescription = null, contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxWidth().aspectRatio(ratio).clip(RoundedCornerShape(12.dp))
+                .clickable { onTap() }
+        )
+    }
+}
+
+@Composable
+fun Infographic(info: Info, pal: Palette, illus: Map<Int, ImageBitmap>, onRegen: (Int) -> Unit) {
     Column(
         Modifier.fillMaxWidth().background(pal.bg).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -152,13 +167,8 @@ fun Infographic(info: Info, pal: Palette, illus: ImageBitmap?) {
                 )
             }
         }
-        if (illus != null) {
-            Image(
-                bitmap = illus, contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp))
-            )
-        }
-        info.blocks.forEach { BlockView(it, pal) }
+        Illus(illus[-1], 16f / 9f) { onRegen(-1) }
+        info.blocks.forEachIndexed { i, b -> BlockView(b, pal, illus[i]) { onRegen(i) } }
         if (info.footer.isNotBlank()) {
             Text(
                 info.footer, color = pal.text.copy(alpha = 0.6f), fontSize = 12.sp,
@@ -194,20 +204,30 @@ fun App(prefs: SharedPreferences) {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var withImage by remember { mutableStateOf(true) }
-    var illus by remember { mutableStateOf<ImageBitmap?>(null) }
+    val illus = remember { mutableStateMapOf<Int, ImageBitmap>() }
+    var imgCount by remember { mutableStateOf(3) }
+    var illusStatus by remember { mutableStateOf("") }
     var illusLoading by remember { mutableStateOf(false) }
     var illusError by remember { mutableStateOf("") }
     val pal = PALETTES[palIdx]
 
-    fun genIllustration(prompt: String) {
+    fun genIllustrations(inf: Info, only: Int?) {
         illusLoading = true
         illusError = ""
         scope.launch {
-            try {
-                val bmp = withContext(Dispatchers.IO) { fetchIllustration(prompt, (1..99999).random()) }
-                illus = bmp.asImageBitmap()
-            } catch (e: Exception) {
-                illusError = "No pude generar la ilustración: " + e.message
+            val slots = imageSlots(inf, imgCount).filter { only == null || it.first == only }
+            var n = 0
+            for ((blockIdx, prompt) in slots) {
+                n++
+                illusStatus = "Dibujando ilustración " + n + " de " + slots.size + "…"
+                try {
+                    val bmp = withContext(Dispatchers.IO) { fetchIllustration(prompt, (1..99999).random()) }
+                    illus[blockIdx] = bmp.asImageBitmap()
+                } catch (e: Exception) {
+                    illusError = "No pude generar una ilustración: " + e.message
+                    if (e.message?.startsWith("Error 429") == true) break
+                }
+                if (n < slots.size) delay(1500)
             }
             illusLoading = false
         }
@@ -220,10 +240,12 @@ fun App(prefs: SharedPreferences) {
         illusError = ""
         scope.launch {
             try {
-                val inf = withContext(Dispatchers.IO) { makeInfo(key, topic.trim()) }
-                illus = null
+                val inf = withContext(Dispatchers.IO) {
+                    makeInfo(key, topic.trim(), if (withImage) imgCount - 1 else 0)
+                }
+                illus.clear()
                 info = inf
-                if (withImage && inf.imagePrompt.isNotBlank()) genIllustration(inf.imagePrompt)
+                if (withImage) genIllustrations(inf, null)
             } catch (e: Exception) {
                 error = e.message ?: "Error"
             }
@@ -291,6 +313,13 @@ fun App(prefs: SharedPreferences) {
                 Spacer(Modifier.width(8.dp))
                 Text("🎨 Añadir ilustración con IA")
             }
+            if (withImage) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1, 3, 5).forEach { n ->
+                        Chip(if (n == 1) "1 ilustración" else "$n ilustraciones", imgCount == n) { imgCount = n }
+                    }
+                }
+            }
             Button(
                 onClick = { generate() }, enabled = topic.isNotBlank() && !loading,
                 modifier = Modifier.fillMaxWidth()
@@ -309,19 +338,21 @@ fun App(prefs: SharedPreferences) {
                         layer.record { this@drawWithContent.drawContent() }
                         drawLayer(layer)
                     }
-                ) { Infographic(inf, pal, illus) }
+                ) { Infographic(inf, pal, illus) { genIllustrations(inf, it) } }
                 if (illusLoading) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
-                        Text("Dibujando la ilustración…", color = Muted)
+                        Text(illusStatus, color = Muted)
                     }
                 }
                 if (illusError.isNotEmpty()) Text(illusError, color = RedErr, fontSize = 13.sp)
-                if (withImage && inf.imagePrompt.isNotBlank()) {
-                    OutlinedButton(onClick = { genIllustration(inf.imagePrompt) }, enabled = !illusLoading) {
-                        Text("🎨 Otra ilustración")
-                    }
+                if (withImage && imageSlots(inf, imgCount).isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = { illus.clear(); genIllustrations(inf, null) },
+                        enabled = !illusLoading
+                    ) { Text("🎨 Otras ilustraciones") }
+                    Text("Toca una ilustración para cambiar solo esa.", color = Muted, fontSize = 12.sp)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = { export(false) }, enabled = !illusLoading) { Text("💾 Guardar imagen") }
